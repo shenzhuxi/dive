@@ -25,14 +25,14 @@ class SpawningManager {
 
 		this.spawningPoints = new Array();
 		this.spawningPoints.push( new Vector3( 0, 0, 0 ) );
-		this.spawningPoints.push( new Vector3( - 40, 0, 15 ) );
-		this.spawningPoints.push( new Vector3( - 30, 0, - 25 ) );
+		// this.spawningPoints.push( new Vector3( - 40, 0, 15 ) );
+		// this.spawningPoints.push( new Vector3( - 30, 0, - 25 ) );
 
 		// health packs
 
 		this.healthPacks = new Array();
 		this.healthPackSpawningPoints = new Array();
-		this.healthPackSpawningPoints.push( new Vector3( - 40, 0, 0 ) );
+		// this.healthPackSpawningPoints.push( new Vector3( - 40, 0, 0 ) );
 		this.healthPackTriggerMap = new Map(); // for mapping healthPack -> trigger
 
 	}

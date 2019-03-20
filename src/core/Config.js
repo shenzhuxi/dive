@@ -59,7 +59,7 @@ const CONFIG = {
 			NOISE_MAX_DISTANCE: 100 // meter
 		},
 		BOUNDING_RADIUS: 0.5, // meter
-		COUNT: 2, // number
+		COUNT: 0, // number
 		HEAD_HEIGHT: 1.5, // meter
 		MAX_HEALTH: 100, // health points
 		DYING_TIME: 3, // seconds
