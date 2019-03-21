@@ -24,9 +24,10 @@ class SpawningManager {
 		// spawning points
 
 		this.spawningPoints = new Array();
-		this.spawningPoints.push( new Vector3( 0, 0, 0 ) );
-		// this.spawningPoints.push( new Vector3( - 40, 0, 15 ) );
-		// this.spawningPoints.push( new Vector3( - 30, 0, - 25 ) );
+		this.spawningPoints.push( new Vector3( - 64, 2.27, 61 ) ); // top right
+		this.spawningPoints.push( new Vector3( 11, 0, 55 ) ); // top left
+		this.spawningPoints.push( new Vector3( 3.5, 0, - 10.5 ) ); // bottom left
+		this.spawningPoints.push( new Vector3( - 82, 2.65, 3 ) ); // bottom right
 
 		// health packs
 
