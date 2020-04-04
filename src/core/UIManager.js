@@ -77,6 +77,7 @@ class UIManager {
 			showItemRadius: false,
 			showWireframe: false,
 			showSpatialIndex: false,
+            enableVR: false,
 			enableFPSControls: () => {
 
 				this.world.fpsControls.connect();
@@ -180,6 +181,21 @@ class UIManager {
 			folderWorld.add( params, 'resumeAudioContext' ).name( 'resume audio context ' );
 			folderWorld.add( params, 'enableFPSControls' ).name( 'enable FPS controls' );
 
+            folderWorld.add( params, 'enableVR' ).name( 'VR inspect bot1' ).onChange( ( value ) => {
+                if (value && this.world.xrSupported) {
+                    this.world.renderer.xr.enabled = true;
+                    const sessionInit = { optionalFeatures: [ 'local-floor' ] };
+                    navigator.xr.requestSession( 'immersive-vr', sessionInit ).then(
+                        (session) => {
+                            this.world._onSessionStarted(session);
+                        }
+                    );
+                }
+                else if (this.world.xrSupported) {
+                    let session = this.world.renderer.xr.getSession();
+                    session.end();
+                }
+            } );
 			// enemy folder
 
 			const folderEnemy = gui.addFolder( 'Enemy' );

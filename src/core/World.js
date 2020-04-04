@@ -68,6 +68,8 @@ class World {
 		this._animate = animate.bind( this );
 		this._onWindowResize = onWindowResize.bind( this );
 
+		this._onSessionStarted = onSessionStarted.bind( this );
+		this._onSessionEnded = onSessionEnded.bind( this );
 		//
 
 		this.debug = true;
@@ -83,7 +85,10 @@ class World {
 			skeletonHelpers: new Array(),
 			itemHelpers: new Array()
 		};
-
+        navigator.xr.isSessionSupported( 'immersive-vr' ).then( (supported ) => {
+            this.xrSupported = supported;
+        });
+        this.xrSession = null;
 	}
 
 	/**
@@ -691,8 +696,7 @@ function onWindowResize() {
 
 function animate() {
 
-	requestAnimationFrame( this._animate );
-
+    this.renderer.setAnimationLoop( this._animate );
 	this.time.update();
 
 	this.tick ++;
@@ -720,6 +724,18 @@ function animate() {
 	this.pathPlanner.update();
 
 	this.renderer.clear();
+    if(this.xrSession){
+        this.xrSession.updateRenderState({
+            depthNear: 0.1,
+            depthFar: 1000.0,
+        });
+        let bot = this.entityManager.getEntityByName('Bot0');
+        if (bot) {
+            var v = new Vector3();
+            v.copy(bot.position);
+            this.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
+        }
+    }
 
 	this.renderer.render( this.scene, this.camera );
 
@@ -727,4 +743,18 @@ function animate() {
 
 }
 
+function onSessionStarted( session ) {
+    session.addEventListener( 'end', this._onSessionEnded );
+    this.renderer.xr.setSession( session );
+    this.xrSession = session;
+    let xrCamera = this.renderer.xr.getCamera(this.camera);
+    console.log(xrCamera);
+}
+
+function onSessionEnded( /*event*/ ) {
+
+    this.xrSession.removeEventListener( 'end', this._onSessionEnded );
+    this.xrSession = null;
+
+}
 export default new World();
