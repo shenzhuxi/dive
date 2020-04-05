@@ -726,9 +726,11 @@ function animate() {
 	this.renderer.clear();
     if(this.xrSession){
         this.xrSession.updateRenderState({
-            depthNear: 0.1,
+            depthNear: 0.3,
             depthFar: 1000.0,
         });
+        if (this.fpsControls)  {
+        }
         let bot = this.entityManager.getEntityByName('Bot0');
         if (bot) {
             var v = new Vector3();
@@ -747,8 +749,7 @@ function onSessionStarted( session ) {
     session.addEventListener( 'end', this._onSessionEnded );
     this.renderer.xr.setSession( session );
     this.xrSession = session;
-    let xrCamera = this.renderer.xr.getCamera(this.camera);
-    console.log(xrCamera);
+    this.camera = this.renderer.xr.getCamera(this.camera);
 }
 
 function onSessionEnded( /*event*/ ) {
