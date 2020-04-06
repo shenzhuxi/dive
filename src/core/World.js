@@ -1,5 +1,5 @@
 import { EntityManager, Time, MeshGeometry, Vector3, CellSpacePartitioning } from 'yuka';
-import { WebGLRenderer, Scene, PerspectiveCamera, Color, AnimationMixer, Object3D, SkeletonHelper } from 'three';
+import { * } from 'three';
 import { HemisphereLight, DirectionalLight } from 'three';
 import { AxesHelper } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -749,7 +749,6 @@ function onSessionStarted( session ) {
     session.addEventListener( 'end', this._onSessionEnded );
     this.renderer.xr.setSession( session );
     this.xrSession = session;
-    this.camera = this.renderer.xr.getCamera(this.camera);
 }
 
 function onSessionEnded( /*event*/ ) {

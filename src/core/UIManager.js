@@ -184,7 +184,7 @@ class UIManager {
             folderWorld.add( params, 'enableVR' ).name( 'VR inspect bot1' ).onChange( ( value ) => {
                 if (value && this.world.xrSupported) {
                     this.world.renderer.xr.enabled = true;
-                    const sessionInit = { optionalFeatures: [ 'local-floor' ] };
+                    const sessionInit = { optionalFeatures: [ 'local-floor', 'bounded-floor' ] };
                     navigator.xr.requestSession( 'immersive-vr', sessionInit ).then(
                         (session) => {
                             this.world._onSessionStarted(session);
