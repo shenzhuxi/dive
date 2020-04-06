@@ -74703,7 +74703,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 	            folderWorld.add( params, 'enableVR' ).name( 'VR inspect bot1' ).onChange( ( value ) => {
 	                if (value && this.world.xrSupported) {
 	                    this.world.renderer.xr.enabled = true;
-	                    const sessionInit = { optionalFeatures: [ 'local-floor' ] };
+	                    const sessionInit = { optionalFeatures: [ 'local-floor', 'bounded-floor' ] };
 	                    navigator.xr.requestSession( 'immersive-vr', sessionInit ).then(
 	                        (session) => {
 	                            this.world._onSessionStarted(session);
@@ -81714,9 +81714,11 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 			// camera
 
-			this.camera = new PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 1000 );
-			this.camera.position.set( 0, 75, 100 );
-			this.camera.add( this.assetManager.listener );
+	        this.camera = new PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 1000 );
+	        this.camera.position.set( 0, 75, 100 );
+	        this.camera.add( this.assetManager.listener );
+	        this.scene.add(this.camera);
+	        this.xrCamera = null;
 
 			// helpers
 
@@ -81755,8 +81757,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			this.renderer.setSize( window.innerWidth, window.innerHeight );
 			this.renderer.autoClear = false;
 			this.renderer.shadowMap.enabled = true;
-			this.renderer.gammaOutput = true;
-			this.renderer.gammaFactor = 2.2;
+	        this.renderer.outputEncoding = sRGBEncoding;
 			document.body.appendChild( this.renderer.domElement );
 
 			// event listeners
@@ -82135,30 +82136,30 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 		this.renderer.clear();
 	    if(this.xrSession){
-	        this.xrSession.updateRenderState({
-	            depthNear: 0.3,
-	            depthFar: 1000.0,
-	        });
-	        if (this.fpsControls)  ;
+	        this.renderer.render( this.scene, this.xrCamera );
 	        let bot = this.entityManager.getEntityByName('Bot0');
 	        if (bot) {
 	            var v = new Vector3();
 	            v.copy(bot.position);
 	            this.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
 	        }
+
 	    }
-
-		this.renderer.render( this.scene, this.camera );
-
-		this.uiManager.update( delta );
-
+	    else {
+		    this.renderer.render( this.scene, this.camera );
+	        this.uiManager.update( delta );
+	    }
 	}
 
 	function onSessionStarted( session ) {
 	    session.addEventListener( 'end', this._onSessionEnded );
 	    this.renderer.xr.setSession( session );
 	    this.xrSession = session;
-	    this.camera = this.renderer.xr.getCamera(this.camera);
+	    this.xrCamera = this.renderer.xr.getCamera(this.camera);
+	    this.xrSession.updateRenderState({
+	        depthNear: 0.35,
+	    });
+	    console.log(this.xrCamera);
 	}
 
 	function onSessionEnded( /*event*/ ) {
