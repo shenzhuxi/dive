@@ -74596,10 +74596,14 @@ vec4 envMapTexelToLinear(vec4 color) {
 				showItemRadius: false,
 				showWireframe: false,
 				showSpatialIndex: false,
-	            enableVR: false,
 				enableFPSControls: () => {
 
 					this.world.fpsControls.connect();
+
+				},
+	            enableVRControls: () => {
+
+					this.world.vrControls.connect();
 
 				},
 				resumeAudioContext: () => {
@@ -74699,22 +74703,8 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 				folderWorld.add( params, 'resumeAudioContext' ).name( 'resume audio context ' );
 				folderWorld.add( params, 'enableFPSControls' ).name( 'enable FPS controls' );
+	            folderWorld.add( params, 'enableVRControls' ).name( 'enable VR controls' );
 
-	            folderWorld.add( params, 'enableVR' ).name( 'VR inspect bot1' ).onChange( ( value ) => {
-	                if (value && this.world.xrSupported) {
-	                    this.world.renderer.xr.enabled = true;
-	                    const sessionInit = { optionalFeatures: [ 'local-floor', 'bounded-floor' ] };
-	                    navigator.xr.requestSession( 'immersive-vr', sessionInit ).then(
-	                        (session) => {
-	                            this.world._onSessionStarted(session);
-	                        }
-	                    );
-	                }
-	                else if (this.world.xrSupported) {
-	                    let session = this.world.renderer.xr.getSession();
-	                    session.end();
-	                }
-	            } );
 				// enemy folder
 
 				const folderEnemy = gui.addFolder( 'Enemy' );
@@ -75618,6 +75608,1322 @@ vec4 envMapTexelToLinear(vec4 color) {
 			}
 
 		}
+
+	}
+
+	/**
+	 * @webxr-input-profiles/motion-controllers 1.0.0 https://github.com/immersive-web/webxr-input-profiles
+	 */
+
+	const Constants = {
+	  Handedness: Object.freeze({
+	    NONE: 'none',
+	    LEFT: 'left',
+	    RIGHT: 'right'
+	  }),
+
+	  ComponentState: Object.freeze({
+	    DEFAULT: 'default',
+	    TOUCHED: 'touched',
+	    PRESSED: 'pressed'
+	  }),
+
+	  ComponentProperty: Object.freeze({
+	    BUTTON: 'button',
+	    X_AXIS: 'xAxis',
+	    Y_AXIS: 'yAxis',
+	    STATE: 'state'
+	  }),
+
+	  ComponentType: Object.freeze({
+	    TRIGGER: 'trigger',
+	    SQUEEZE: 'squeeze',
+	    TOUCHPAD: 'touchpad',
+	    THUMBSTICK: 'thumbstick',
+	    BUTTON: 'button'
+	  }),
+
+	  ButtonTouchThreshold: 0.05,
+
+	  AxisTouchThreshold: 0.1,
+
+	  VisualResponseProperty: Object.freeze({
+	    TRANSFORM: 'transform',
+	    VISIBILITY: 'visibility'
+	  })
+	};
+
+	/**
+	 * @description Static helper function to fetch a JSON file and turn it into a JS object
+	 * @param {string} path - Path to JSON file to be fetched
+	 */
+	async function fetchJsonFile(path) {
+	  const response = await fetch(path);
+	  if (!response.ok) {
+	    throw new Error(response.statusText);
+	  } else {
+	    return response.json();
+	  }
+	}
+
+	async function fetchProfilesList(basePath) {
+	  if (!basePath) {
+	    throw new Error('No basePath supplied');
+	  }
+
+	  const profileListFileName = 'profilesList.json';
+	  const profilesList = await fetchJsonFile(`${basePath}/${profileListFileName}`);
+	  return profilesList;
+	}
+
+	async function fetchProfile(xrInputSource, basePath, defaultProfile = null, getAssetPath = true) {
+	  if (!xrInputSource) {
+	    throw new Error('No xrInputSource supplied');
+	  }
+
+	  if (!basePath) {
+	    throw new Error('No basePath supplied');
+	  }
+
+	  // Get the list of profiles
+	  const supportedProfilesList = await fetchProfilesList(basePath);
+
+	  // Find the relative path to the first requested profile that is recognized
+	  let match;
+	  xrInputSource.profiles.some((profileId) => {
+	    const supportedProfile = supportedProfilesList[profileId];
+	    if (supportedProfile) {
+	      match = {
+	        profileId,
+	        profilePath: `${basePath}/${supportedProfile.path}`,
+	        deprecated: !!supportedProfile.deprecated
+	      };
+	    }
+	    return !!match;
+	  });
+
+	  if (!match) {
+	    if (!defaultProfile) {
+	      throw new Error('No matching profile name found');
+	    }
+
+	    const supportedProfile = supportedProfilesList[defaultProfile];
+	    if (!supportedProfile) {
+	      throw new Error(`No matching profile name found and default profile "${defaultProfile}" missing.`);
+	    }
+
+	    match = {
+	      profileId: defaultProfile,
+	      profilePath: `${basePath}/${supportedProfile.path}`,
+	      deprecated: !!supportedProfile.deprecated
+	    };
+	  }
+
+	  const profile = await fetchJsonFile(match.profilePath);
+
+	  let assetPath;
+	  if (getAssetPath) {
+	    let layout;
+	    if (xrInputSource.handedness === 'any') {
+	      layout = profile.layouts[Object.keys(profile.layouts)[0]];
+	    } else {
+	      layout = profile.layouts[xrInputSource.handedness];
+	    }
+	    if (!layout) {
+	      throw new Error(
+	        `No matching handedness, ${xrInputSource.handedness}, in profile ${match.profileId}`
+	      );
+	    }
+
+	    if (layout.assetPath) {
+	      assetPath = match.profilePath.replace('profile.json', layout.assetPath);
+	    }
+	  }
+
+	  return { profile, assetPath };
+	}
+
+	/** @constant {Object} */
+	const defaultComponentValues = {
+	  xAxis: 0,
+	  yAxis: 0,
+	  button: 0,
+	  state: Constants.ComponentState.DEFAULT
+	};
+
+	/**
+	 * @description Converts an X, Y coordinate from the range -1 to 1 (as reported by the Gamepad
+	 * API) to the range 0 to 1 (for interpolation). Also caps the X, Y values to be bounded within
+	 * a circle. This ensures that thumbsticks are not animated outside the bounds of their physical
+	 * range of motion and touchpads do not report touch locations off their physical bounds.
+	 * @param {number} x The original x coordinate in the range -1 to 1
+	 * @param {number} y The original y coordinate in the range -1 to 1
+	 */
+	function normalizeAxes(x = 0, y = 0) {
+	  let xAxis = x;
+	  let yAxis = y;
+
+	  // Determine if the point is outside the bounds of the circle
+	  // and, if so, place it on the edge of the circle
+	  const hypotenuse = Math.sqrt((x * x) + (y * y));
+	  if (hypotenuse > 1) {
+	    const theta = Math.atan2(y, x);
+	    xAxis = Math.cos(theta);
+	    yAxis = Math.sin(theta);
+	  }
+
+	  // Scale and move the circle so values are in the interpolation range.  The circle's origin moves
+	  // from (0, 0) to (0.5, 0.5). The circle's radius scales from 1 to be 0.5.
+	  const result = {
+	    normalizedXAxis: (xAxis * 0.5) + 0.5,
+	    normalizedYAxis: (yAxis * 0.5) + 0.5
+	  };
+	  return result;
+	}
+
+	/**
+	 * Contains the description of how the 3D model should visually respond to a specific user input.
+	 * This is accomplished by initializing the object with the name of a node in the 3D model and
+	 * property that need to be modified in response to user input, the name of the nodes representing
+	 * the allowable range of motion, and the name of the input which triggers the change. In response
+	 * to the named input changing, this object computes the appropriate weighting to use for
+	 * interpolating between the range of motion nodes.
+	 */
+	class VisualResponse {
+	  constructor(visualResponseDescription) {
+	    this.componentProperty = visualResponseDescription.componentProperty;
+	    this.states = visualResponseDescription.states;
+	    this.valueNodeName = visualResponseDescription.valueNodeName;
+	    this.valueNodeProperty = visualResponseDescription.valueNodeProperty;
+
+	    if (this.valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM) {
+	      this.minNodeName = visualResponseDescription.minNodeName;
+	      this.maxNodeName = visualResponseDescription.maxNodeName;
+	    }
+
+	    // Initializes the response's current value based on default data
+	    this.value = 0;
+	    this.updateFromComponent(defaultComponentValues);
+	  }
+
+	  /**
+	   * Computes the visual response's interpolation weight based on component state
+	   * @param {Object} componentValues - The component from which to update
+	   * @param {number} xAxis - The reported X axis value of the component
+	   * @param {number} yAxis - The reported Y axis value of the component
+	   * @param {number} button - The reported value of the component's button
+	   * @param {string} state - The component's active state
+	   */
+	  updateFromComponent({
+	    xAxis, yAxis, button, state
+	  }) {
+	    const { normalizedXAxis, normalizedYAxis } = normalizeAxes(xAxis, yAxis);
+	    switch (this.componentProperty) {
+	      case Constants.ComponentProperty.X_AXIS:
+	        this.value = (this.states.includes(state)) ? normalizedXAxis : 0.5;
+	        break;
+	      case Constants.ComponentProperty.Y_AXIS:
+	        this.value = (this.states.includes(state)) ? normalizedYAxis : 0.5;
+	        break;
+	      case Constants.ComponentProperty.BUTTON:
+	        this.value = (this.states.includes(state)) ? button : 0;
+	        break;
+	      case Constants.ComponentProperty.STATE:
+	        if (this.valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY) {
+	          this.value = (this.states.includes(state));
+	        } else {
+	          this.value = this.states.includes(state) ? 1.0 : 0.0;
+	        }
+	        break;
+	      default:
+	        throw new Error(`Unexpected visualResponse componentProperty ${this.componentProperty}`);
+	    }
+	  }
+	}
+
+	class Component {
+	  /**
+	   * @param {Object} componentId - Id of the component
+	   * @param {Object} componentDescription - Description of the component to be created
+	   */
+	  constructor(componentId, componentDescription) {
+	    if (!componentId
+	     || !componentDescription
+	     || !componentDescription.visualResponses
+	     || !componentDescription.gamepadIndices
+	     || Object.keys(componentDescription.gamepadIndices).length === 0) {
+	      throw new Error('Invalid arguments supplied');
+	    }
+
+	    this.id = componentId;
+	    this.type = componentDescription.type;
+	    this.rootNodeName = componentDescription.rootNodeName;
+	    this.touchPointNodeName = componentDescription.touchPointNodeName;
+
+	    // Build all the visual responses for this component
+	    this.visualResponses = {};
+	    Object.keys(componentDescription.visualResponses).forEach((responseName) => {
+	      const visualResponse = new VisualResponse(componentDescription.visualResponses[responseName]);
+	      this.visualResponses[responseName] = visualResponse;
+	    });
+
+	    // Set default values
+	    this.gamepadIndices = Object.assign({}, componentDescription.gamepadIndices);
+
+	    this.values = {
+	      state: Constants.ComponentState.DEFAULT,
+	      button: (this.gamepadIndices.button !== undefined) ? 0 : undefined,
+	      xAxis: (this.gamepadIndices.xAxis !== undefined) ? 0 : undefined,
+	      yAxis: (this.gamepadIndices.yAxis !== undefined) ? 0 : undefined
+	    };
+	  }
+
+	  get data() {
+	    const data = { id: this.id, ...this.values };
+	    return data;
+	  }
+
+	  /**
+	   * @description Poll for updated data based on current gamepad state
+	   * @param {Object} gamepad - The gamepad object from which the component data should be polled
+	   */
+	  updateFromGamepad(gamepad) {
+	    // Set the state to default before processing other data sources
+	    this.values.state = Constants.ComponentState.DEFAULT;
+
+	    // Get and normalize button
+	    if (this.gamepadIndices.button !== undefined
+	        && gamepad.buttons.length > this.gamepadIndices.button) {
+	      const gamepadButton = gamepad.buttons[this.gamepadIndices.button];
+	      this.values.button = gamepadButton.value;
+	      this.values.button = (this.values.button < 0) ? 0 : this.values.button;
+	      this.values.button = (this.values.button > 1) ? 1 : this.values.button;
+
+	      // Set the state based on the button
+	      if (gamepadButton.pressed || this.values.button === 1) {
+	        this.values.state = Constants.ComponentState.PRESSED;
+	      } else if (gamepadButton.touched || this.values.button > Constants.ButtonTouchThreshold) {
+	        this.values.state = Constants.ComponentState.TOUCHED;
+	      }
+	    }
+
+	    // Get and normalize x axis value
+	    if (this.gamepadIndices.xAxis !== undefined
+	        && gamepad.axes.length > this.gamepadIndices.xAxis) {
+	      this.values.xAxis = gamepad.axes[this.gamepadIndices.xAxis];
+	      this.values.xAxis = (this.values.xAxis < -1) ? -1 : this.values.xAxis;
+	      this.values.xAxis = (this.values.xAxis > 1) ? 1 : this.values.xAxis;
+
+	      // If the state is still default, check if the xAxis makes it touched
+	      if (this.values.state === Constants.ComponentState.DEFAULT
+	        && Math.abs(this.values.xAxis) > Constants.AxisTouchThreshold) {
+	        this.values.state = Constants.ComponentState.TOUCHED;
+	      }
+	    }
+
+	    // Get and normalize Y axis value
+	    if (this.gamepadIndices.yAxis !== undefined
+	        && gamepad.axes.length > this.gamepadIndices.yAxis) {
+	      this.values.yAxis = gamepad.axes[this.gamepadIndices.yAxis];
+	      this.values.yAxis = (this.values.yAxis < -1) ? -1 : this.values.yAxis;
+	      this.values.yAxis = (this.values.yAxis > 1) ? 1 : this.values.yAxis;
+
+	      // If the state is still default, check if the yAxis makes it touched
+	      if (this.values.state === Constants.ComponentState.DEFAULT
+	        && Math.abs(this.values.yAxis) > Constants.AxisTouchThreshold) {
+	        this.values.state = Constants.ComponentState.TOUCHED;
+	      }
+	    }
+
+	    // Update the visual response weights based on the current component data
+	    Object.values(this.visualResponses).forEach((visualResponse) => {
+	      visualResponse.updateFromComponent(this.values);
+	    });
+	  }
+	}
+
+	/**
+	  * @description Builds a motion controller with components and visual responses based on the
+	  * supplied profile description. Data is polled from the xrInputSource's gamepad.
+	  * @author Nell Waliczek / https://github.com/NellWaliczek
+	*/
+	class MotionController {
+	  /**
+	   * @param {Object} xrInputSource - The XRInputSource to build the MotionController around
+	   * @param {Object} profile - The best matched profile description for the supplied xrInputSource
+	   * @param {Object} assetUrl
+	   */
+	  constructor(xrInputSource, profile, assetUrl) {
+	    if (!xrInputSource) {
+	      throw new Error('No xrInputSource supplied');
+	    }
+
+	    if (!profile) {
+	      throw new Error('No profile supplied');
+	    }
+
+	    this.xrInputSource = xrInputSource;
+	    this.assetUrl = assetUrl;
+	    this.id = profile.profileId;
+
+	    // Build child components as described in the profile description
+	    this.layoutDescription = profile.layouts[xrInputSource.handedness];
+	    this.components = {};
+	    Object.keys(this.layoutDescription.components).forEach((componentId) => {
+	      const componentDescription = this.layoutDescription.components[componentId];
+	      this.components[componentId] = new Component(componentId, componentDescription);
+	    });
+
+	    // Initialize components based on current gamepad state
+	    this.updateFromGamepad();
+	  }
+
+	  get gripSpace() {
+	    return this.xrInputSource.gripSpace;
+	  }
+
+	  get targetRaySpace() {
+	    return this.xrInputSource.targetRaySpace;
+	  }
+
+	  /**
+	   * @description Returns a subset of component data for simplified debugging
+	   */
+	  get data() {
+	    const data = [];
+	    Object.values(this.components).forEach((component) => {
+	      data.push(component.data);
+	    });
+	    return data;
+	  }
+
+	  /**
+	   * @description Poll for updated data based on current gamepad state
+	   */
+	  updateFromGamepad() {
+	    Object.values(this.components).forEach((component) => {
+	      component.updateFromGamepad(this.xrInputSource.gamepad);
+	    });
+	  }
+	}
+
+	/**
+	 * @author Nell Waliczek / https://github.com/NellWaliczek
+	 * @author Brandon Jones / https://github.com/toji
+	 */
+
+	const DEFAULT_PROFILES_PATH = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles';
+	const DEFAULT_PROFILE = 'generic-trigger';
+
+	function XRControllerModel( ) {
+
+		Object3D.call( this );
+
+		this.motionController = null;
+		this.envMap = null;
+
+	}
+
+	XRControllerModel.prototype = Object.assign( Object.create( Object3D.prototype ), {
+
+		constructor: XRControllerModel,
+
+		setEnvironmentMap: function ( envMap ) {
+
+			if ( this.envMap == envMap ) {
+
+				return this;
+
+			}
+
+			this.envMap = envMap;
+			this.traverse( ( child ) => {
+
+				if ( child.isMesh ) {
+
+					child.material.envMap = this.envMap;
+					child.material.needsUpdate = true;
+
+				}
+
+			} );
+
+			return this;
+
+		},
+
+		/**
+		 * Polls data from the XRInputSource and updates the model's components to match
+		 * the real world data
+		 */
+		updateMatrixWorld: function ( force ) {
+
+			Object3D.prototype.updateMatrixWorld.call( this, force );
+
+			if ( ! this.motionController ) return;
+
+			// Cause the MotionController to poll the Gamepad for data
+			this.motionController.updateFromGamepad();
+
+			// Update the 3D model to reflect the button, thumbstick, and touchpad state
+			Object.values( this.motionController.components ).forEach( ( component ) => {
+
+				// Update node data based on the visual responses' current states
+				Object.values( component.visualResponses ).forEach( ( visualResponse ) => {
+
+					const { valueNode, minNode, maxNode, value, valueNodeProperty } = visualResponse;
+
+					// Skip if the visual response node is not found. No error is needed,
+					// because it will have been reported at load time.
+					if ( ! valueNode ) return;
+
+					// Calculate the new properties based on the weight supplied
+					if ( valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY ) {
+
+						valueNode.visible = value;
+
+					} else if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+						Quaternion$1.slerp(
+							minNode.quaternion,
+							maxNode.quaternion,
+							valueNode.quaternion,
+							value
+						);
+
+						valueNode.position.lerpVectors(
+							minNode.position,
+							maxNode.position,
+							value
+						);
+
+					}
+
+				} );
+
+			} );
+
+		}
+
+	} );
+
+	/**
+	 * Walks the model's tree to find the nodes needed to animate the components and
+	 * saves them to the motionContoller components for use in the frame loop. When
+	 * touchpads are found, attaches a touch dot to them.
+	 */
+	function findNodes( motionController, scene ) {
+
+		// Loop through the components and find the nodes needed for each components' visual responses
+		Object.values( motionController.components ).forEach( ( component ) => {
+
+			const { type, touchPointNodeName, visualResponses } = component;
+
+			if ( type === Constants.ComponentType.TOUCHPAD ) {
+
+				component.touchPointNode = scene.getObjectByName( touchPointNodeName );
+				if ( component.touchPointNode ) {
+
+					// Attach a touch dot to the touchpad.
+					const sphereGeometry = new SphereGeometry( 0.001 );
+					const material = new MeshBasicMaterial( { color: 0x0000FF } );
+					const sphere = new Mesh( sphereGeometry, material );
+					component.touchPointNode.add( sphere );
+
+				} else {
+
+					console.warn( `Could not find touch dot, ${component.touchPointNodeName}, in touchpad component ${component.id}` );
+
+				}
+
+			}
+
+			// Loop through all the visual responses to be applied to this component
+			Object.values( visualResponses ).forEach( ( visualResponse ) => {
+
+				const { valueNodeName, minNodeName, maxNodeName, valueNodeProperty } = visualResponse;
+
+				// If animating a transform, find the two nodes to be interpolated between.
+				if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+					visualResponse.minNode = scene.getObjectByName( minNodeName );
+					visualResponse.maxNode = scene.getObjectByName( maxNodeName );
+
+					// If the extents cannot be found, skip this animation
+					if ( ! visualResponse.minNode ) {
+
+						console.warn( `Could not find ${minNodeName} in the model` );
+						return;
+
+					}
+
+					if ( ! visualResponse.maxNode ) {
+
+						console.warn( `Could not find ${maxNodeName} in the model` );
+						return;
+
+					}
+
+				}
+
+				// If the target node cannot be found, skip this animation
+				visualResponse.valueNode = scene.getObjectByName( valueNodeName );
+				if ( ! visualResponse.valueNode ) {
+
+					console.warn( `Could not find ${valueNodeName} in the model` );
+
+				}
+
+			} );
+
+		} );
+
+	}
+
+	function addAssetSceneToControllerModel( controllerModel, scene ) {
+
+		// Find the nodes needed for animation and cache them on the motionController.
+		findNodes( controllerModel.motionController, scene );
+
+		// Apply any environment map that the mesh already has set.
+		if ( controllerModel.envMap ) {
+
+			scene.traverse( ( child ) => {
+
+				if ( child.isMesh ) {
+
+					child.material.envMap = controllerModel.envMap;
+					child.material.needsUpdate = true;
+
+				}
+
+			} );
+
+		}
+
+		// Add the glTF scene to the controllerModel.
+		controllerModel.add( scene );
+
+	}
+
+	var XRControllerModelFactory = ( function () {
+
+		function XRControllerModelFactory( gltfLoader = null ) {
+
+			this.gltfLoader = gltfLoader;
+			this.path = DEFAULT_PROFILES_PATH;
+			this._assetCache = {};
+
+			// If a GLTFLoader wasn't supplied to the constructor create a new one.
+			if ( ! this.gltfLoader ) {
+
+				this.gltfLoader = new GLTFLoader();
+
+			}
+
+		}
+
+		XRControllerModelFactory.prototype = {
+
+			constructor: XRControllerModelFactory,
+
+			createControllerModel: function ( controller ) {
+
+				const controllerModel = new XRControllerModel();
+				let scene = null;
+
+				controller.addEventListener( 'connected', ( event ) => {
+
+					const xrInputSource = event.data;
+
+					if ( xrInputSource.targetRayMode !== 'tracked-pointer' || ! xrInputSource.gamepad ) return;
+
+					fetchProfile( xrInputSource, this.path, DEFAULT_PROFILE ).then( ( { profile, assetPath } ) => {
+
+						controllerModel.motionController = new MotionController(
+							xrInputSource,
+							profile,
+							assetPath
+						);
+
+						let cachedAsset = this._assetCache[ controllerModel.motionController.assetUrl ];
+						if ( cachedAsset ) {
+
+							scene = cachedAsset.scene.clone();
+
+							addAssetSceneToControllerModel( controllerModel, scene );
+
+						} else {
+
+							if ( ! this.gltfLoader ) {
+
+								throw new Error( `GLTFLoader not set.` );
+
+							}
+
+							this.gltfLoader.setPath( '' );
+							this.gltfLoader.load( controllerModel.motionController.assetUrl, ( asset ) => {
+
+								this._assetCache[ controllerModel.motionController.assetUrl ] = asset;
+
+								scene = asset.scene.clone();
+
+								addAssetSceneToControllerModel( controllerModel, scene );
+
+							},
+							null,
+							() => {
+
+								throw new Error( `Asset ${controllerModel.motionController.assetUrl} missing or malformed.` );
+
+							} );
+
+						}
+
+					} ).catch( ( err ) => {
+
+						console.warn( err );
+
+					} );
+
+				} );
+
+				controller.addEventListener( 'disconnected', () => {
+
+					controllerModel.motionController = null;
+					controllerModel.remove( scene );
+					scene = null;
+
+				} );
+
+				return controllerModel;
+
+			}
+
+		};
+
+		return XRControllerModelFactory;
+
+	} )();
+
+	/**
+	 * @webxr-input-profiles/motion-controllers 1.0.0 https://github.com/immersive-web/webxr-input-profiles
+	 */
+
+	const Constants$1 = {
+	  Handedness: Object.freeze({
+	    NONE: 'none',
+	    LEFT: 'left',
+	    RIGHT: 'right'
+	  }),
+
+	  ComponentState: Object.freeze({
+	    DEFAULT: 'default',
+	    TOUCHED: 'touched',
+	    PRESSED: 'pressed'
+	  }),
+
+	  ComponentProperty: Object.freeze({
+	    BUTTON: 'button',
+	    X_AXIS: 'xAxis',
+	    Y_AXIS: 'yAxis',
+	    STATE: 'state'
+	  }),
+
+	  ComponentType: Object.freeze({
+	    TRIGGER: 'trigger',
+	    SQUEEZE: 'squeeze',
+	    TOUCHPAD: 'touchpad',
+	    THUMBSTICK: 'thumbstick',
+	    BUTTON: 'button'
+	  }),
+
+	  ButtonTouchThreshold: 0.05,
+
+	  AxisTouchThreshold: 0.1,
+
+	  VisualResponseProperty: Object.freeze({
+	    TRANSFORM: 'transform',
+	    VISIBILITY: 'visibility'
+	  })
+	};
+
+	/** @constant {Object} */
+	const defaultComponentValues$1 = {
+	  xAxis: 0,
+	  yAxis: 0,
+	  button: 0,
+	  state: Constants$1.ComponentState.DEFAULT
+	};
+
+	const PI05$1 = Math.PI / 2;
+	const direction$3 = new Vector3();
+	const velocity$1 = new Vector3();
+
+	const STEP1$1 = 'step1';
+	const STEP2$1 = 'step2';
+
+	let currentSign$1 = 1;
+	let elapsed$1 = 0;
+
+	const euler$1 = { x: 0, y: 0, z: 0 };
+
+	/**
+	* Holds the implementation of the VR First-Person Controls.
+	*
+	*/
+	class VRControls extends EventDispatcher {
+
+		/**
+		* Constructs a new first person controls.
+		*
+		* @param {Player} owner - A refernce to the player object.
+		*/
+		constructor( world ) {
+
+			super();
+
+	        this.world = world;
+			this.owner = world.player;
+
+			this.active = false;
+	        this.xrScene = null;
+	        this.controllers = [];
+	        this.controllerGrips = [];
+	        this.inputBuffer = [];
+	        this.frameId = 0;
+	        this.clock = new Clock();
+	        this.delta = this.clock.getDelta(),
+	        this.xrReferenceSpace = null;
+			this.movementX = 0; // mouse left/right
+			this.movementY = 0; // mouse up/down
+
+			this.lookingSpeed = CONFIG.CONTROLS.LOOKING_SPEED;
+			this.brakingPower = CONFIG.CONTROLS.BRAKING_POWER;
+			this.headMovement = CONFIG.CONTROLS.HEAD_MOVEMENT;
+			this.weaponMovement = CONFIG.CONTROLS.WEAPON_MOVEMENT;
+
+			this.input = {
+	            select: false,
+				forward: false,
+				backward: false,
+				right: false,
+				left: false,
+				mouseDown: false
+			};
+
+			this.sounds = new Map();
+
+			this._mouseDownHandler = onMouseDown$1.bind( this );
+			this._mouseUpHandler = onMouseUp$1.bind( this );
+			this._mouseMoveHandler = onMouseMove$1.bind( this );
+			this._keyDownHandler = onKeyDown$1.bind( this );
+			this._keyUpHandler = onKeyUp$1.bind( this );
+	        
+			this._onSessionStarted = onSessionStarted.bind( this );
+			this._onSessionEnded = onSessionEnded.bind( this );
+	        this._onInputSourcesChange = onInputSourcesChange.bind(this);
+	        var geometry = new BufferGeometry();
+	        geometry.setAttribute( 'position', new Float32BufferAttribute( [ 0, 0, 0, 0, 0, -100 ], 3 ) );
+	        geometry.setAttribute( 'color', new Float32BufferAttribute( [ 0.5, 0.5, 0.5, 0, 0, 0 ], 3 ) );
+
+	        var material = new LineBasicMaterial( { vertexColors: true, blending: AdditiveBlending } );
+	        this.line = new Line( geometry, material );
+	        this.line.name = 'laser';
+	        this.line.matrixAutoUpdate = false;
+		}
+
+		/**
+		* Connects the event listeners and activates the controls.
+		*
+		* @return {VRControls} A reference to this instance.
+		*/
+		connect() {
+
+	        if (this.world.xrSupported) {
+	            this.world.renderer.xr.enabled = true;
+	            const sessionInit = { optionalFeatures: [ 'local-floor', 'bounded-floor' ] };
+	            navigator.xr.requestSession( 'immersive-vr', sessionInit ).then(
+	                (session) => {
+	                    this._onSessionStarted(session);
+	                }
+	            );
+	        }
+
+	        this.owner.head.setRenderComponent(this.line, sync$1);
+	        this.world.scene.add(this.line);
+			return this;
+
+		}
+
+		/**
+		* Disconnects the event listeners and deactivates the controls.
+		*
+		* @return {VRControls} A reference to this instance.
+		*/
+		disconnect() {
+
+			return this;
+
+		}
+
+		/**
+		* Ensures the controls reflect the current orientation of the owner. This method is
+		* always used if the player's orientation is set manually. In this case, it's necessary
+		* to adjust internal variables.
+		*
+		* @return {VRControls} A reference to this instance.
+		*/
+		sync() {
+
+			this.owner.rotation.toEuler( euler$1 );
+			this.movementX = euler$1.y; // yaw
+
+			this.owner.head.rotation.toEuler( euler$1 );
+			this.movementY = euler$1.x; // pitch
+
+			return this;
+
+		}
+
+		/**
+		* Resets the controls (e.g. after a respawn).
+		*
+		* @param {Number} delta - The time delta.
+		* @return {VRControls} A reference to this instance.
+		*/
+		reset() {
+
+			this.active = true;
+
+			this.movementX = 0;
+			this.movementY = 0;
+
+			this.input.forward = false;
+			this.input.backward = false;
+			this.input.right = false;
+			this.input.left = false;
+			this.input.mouseDown = false;
+
+			currentSign$1 = 1;
+			elapsed$1 = 0;
+			velocity$1.set( 0, 0, 0 );
+
+		}
+
+		/**
+		* Update method of this controls. Computes the current velocity and head bobbing
+		* of the owner (player).
+		*
+		* @param {Number} delta - The time delta.
+		* @return {VRControls} A reference to this instance.
+		*/
+		update( delta ) {        
+			if ( this.active ) {
+	            var v = new Vector3();
+	            v.copy(this.owner.position);
+	            this.world.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
+	            //this.owner.head.getWorldPosition(v);
+	            //this.world.scene.position.y =  -1 * v.y;
+	            //this.world.scene.position.x =  -1 * v.x;
+	            //this.world.scene.position.z =  -1 * v.z;
+	            //this.owner.head.position.y = v.y;
+	            
+	            //https://stackoverflow.com/questions/43606135/split-quaternion-into-axis-rotations
+	            var q = new Quaternion$1();
+	            q.copy(this.world.xrCamera.quaternion);
+	            var theta = Math.atan2(q.y, q.w);
+	            this.owner.rotation.set(0, Math.sin(theta), 0, Math.cos(theta));
+	            
+				this._updateVelocity( delta );
+
+				const speed = this.owner.getSpeed();
+				elapsed$1 += delta * speed;
+
+	            if (this.controllers.length > 0) {
+	                var controller = this.controllers[0];
+	                this.owner.head.position.y = controller.position.y;
+	                var q = new Quaternion$1();
+	                q.copy( this.owner.rotation ).inverse();
+	                this.owner.head.rotation.copy( q.multiply(controller.quaternion) );
+	                var u = new Euler();
+	                this.owner.head.rotation.toEuler(u);
+	                if (u.x > 1.0) {
+	                    this.input.forward = true;
+	                    this.input.backward = false;
+	                }
+	                if (u.x < -1.0) {
+	                    this.input.backward = true;
+	                    this.input.forward = false;
+	                }
+	                if (u.x >= -1.0 && controller.rotation.x <= 1.0) {
+	                    this.input.backward = false;
+	                    this.input.forward = false;
+	                }
+	                if (u.z > 1.0) {
+	                    if ( this.owner.hasWeapon( WEAPON_TYPES_SHOTGUN ) ) {
+
+	                        this.owner.changeWeapon( WEAPON_TYPES_SHOTGUN );
+
+	                    } 
+	                    else {
+	                        this.owner.changeWeapon( WEAPON_TYPES_BLASTER );
+
+	                    }
+	                }
+	                if (u.z < -1.0) {
+	                    if ( this.owner.hasWeapon( WEAPON_TYPES_ASSAULT_RIFLE ) ) {
+
+	                        this.owner.changeWeapon( WEAPON_TYPES_ASSAULT_RIFLE );
+
+	                    }
+	                    else {
+	                        this.owner.changeWeapon( WEAPON_TYPES_BLASTER );
+
+	                    }
+	                }
+	            }
+				// elapsed is used by the following two methods. it is scaled with the speed
+				// to modulate the head bobbing and weapon movement
+
+				this._updateHead();
+				this._updateWeapon();
+
+	            //60 frames/second input sampling
+	            if (this.clock.getDelta() < 1/60) {
+	                return this;
+	            }
+	            this.clock.start();
+	            this.frameId ++;
+	            this.inputBuffer[this.frameId] = {
+	                delta: delta,
+	                vrController: {
+	                    select: this.input.select,
+	                    trigger: {},
+	                    touchpad: {}
+	                }
+	            };
+
+	            if (this.inputBuffer[this.frameId].vrController.select) {
+	                // if the trigger is pressed and an automatic weapon like the assault rifle is equiped
+	                // support automatic fire
+	                if ( this.owner.isAutomaticWeaponUsed() ) {
+	                    this.owner.shoot();
+	                }
+	                else if (!this.inputBuffer[this.frameId - 1].vrController.select) {
+	                    this.owner.shoot();
+	                }
+	            }
+			}
+
+			return this;
+
+		}
+
+		/**
+		* Computes the current velocity of the owner (player).
+		*
+		* @param {Number} delta - The time delta.
+		* @return {VRControls} A reference to this instance.
+		*/
+		_updateVelocity( delta ) {
+
+			const input = this.input;
+			const owner = this.owner;
+
+			velocity$1.x -= velocity$1.x * this.brakingPower * delta;
+			velocity$1.z -= velocity$1.z * this.brakingPower * delta;
+
+			direction$3.z = Number( input.forward ) - Number( input.backward );
+			direction$3.x = Number( input.left ) - Number( input.right );
+			direction$3.normalize();
+
+			if ( input.forward || input.backward ) velocity$1.z -= direction$3.z * CONFIG.CONTROLS.ACCELERATION * delta;
+			if ( input.left || input.right ) velocity$1.x -= direction$3.x * CONFIG.CONTROLS.ACCELERATION * delta;
+
+			owner.velocity.copy( velocity$1 ).applyRotation( owner.rotation );
+
+			return this;
+
+		}
+
+		/**
+		* Computes the head bobbing of the owner (player).
+		*
+		* @return {VRControls} A reference to this instance.
+		*/
+		_updateHead() {
+
+			const owner = this.owner;
+			const head = owner.head;
+
+			// some simple head bobbing
+
+			//const motion = Math.sin( elapsed * this.headMovement );
+
+			//head.position.y = Math.abs( motion ) * 0.06;
+			//head.position.x = motion * 0.08;
+
+			//
+
+			head.position.y = this.world.xrCamera.position.y * 0.618;//owner.height;
+
+			//
+
+			const sign = Math.sign( Math.cos( elapsed$1 * this.headMovement ) );
+
+			if ( sign < currentSign$1 ) {
+
+				currentSign$1 = sign;
+
+				const audio = this.owner.audios.get( STEP1$1 );
+				audio.play();
+
+			}
+
+			if ( sign > currentSign$1 ) {
+
+				currentSign$1 = sign;
+
+				const audio = this.owner.audios.get( STEP2$1 );
+				audio.play();
+
+			}
+
+			return this;
+
+		}
+
+		/**
+		* Computes the movement of the current armed weapon.
+		*
+		* @return {VRControls} A reference to this instance.
+		*/
+		_updateWeapon() {
+
+			const owner = this.owner;
+			const weaponContainer = owner.weaponContainer;
+
+			const motion = Math.sin( elapsed$1 * this.weaponMovement );
+
+			weaponContainer.position.x = motion * 0.005;
+			weaponContainer.position.y = Math.abs( motion ) * 0.002;
+
+			return this;
+
+		}
+
+	}
+
+	// event listeners
+
+	function onMouseDown$1( event ) {
+
+		if ( this.active && event.which === 1 ) {
+
+			this.input.mouseDown = true;
+			this.owner.shoot();
+
+		}
+
+	}
+
+	function onMouseUp$1( event ) {
+
+		if ( this.active && event.which === 1 ) {
+
+			this.input.mouseDown = false;
+
+		}
+
+	}
+
+	function onMouseMove$1( event ) {
+
+		if ( this.active ) {
+
+			this.movementX -= event.movementX * 0.001 * this.lookingSpeed;
+			this.movementY -= event.movementY * 0.001 * this.lookingSpeed;
+
+			this.movementY = Math.max( - PI05$1, Math.min( PI05$1, this.movementY ) );
+
+			this.owner.rotation.fromEuler( 0, this.movementX, 0 ); // yaw
+			this.owner.head.rotation.fromEuler( this.movementY, 0, 0 ); // pitch
+
+		}
+
+	}
+
+	function onKeyDown$1( event ) {
+
+		if ( this.active ) {
+
+			switch ( event.keyCode ) {
+
+				case 38: // up
+				case 87: // w
+					this.input.forward = true;
+					break;
+
+				case 37: // left
+				case 65: // a
+					this.input.left = true;
+					break;
+
+				case 40: // down
+				case 83: // s
+					this.input.backward = true;
+					break;
+
+				case 39: // right
+				case 68: // d
+					this.input.right = true;
+					break;
+
+				case 82: // r
+					this.owner.reload();
+					break;
+
+				case 49: // 1
+					this.owner.changeWeapon( WEAPON_TYPES_BLASTER );
+					break;
+
+				case 50: // 2
+					if ( this.owner.hasWeapon( WEAPON_TYPES_SHOTGUN ) ) {
+
+						this.owner.changeWeapon( WEAPON_TYPES_SHOTGUN );
+
+					}
+					break;
+
+				case 51: // 3
+					if ( this.owner.hasWeapon( WEAPON_TYPES_ASSAULT_RIFLE ) ) {
+
+						this.owner.changeWeapon( WEAPON_TYPES_ASSAULT_RIFLE );
+
+					}
+					break;
+
+			}
+
+		}
+
+	}
+
+	function onKeyUp$1( event ) {
+
+		if ( this.active ) {
+
+			switch ( event.keyCode ) {
+
+				case 38: // up
+				case 87: // w
+					this.input.forward = false;
+					break;
+
+				case 37: // left
+				case 65: // a
+					this.input.left = false;
+					break;
+
+				case 40: // down
+				case 83: // s
+					this.input.backward = false;
+					break;
+
+				case 39: // right
+				case 68: // d
+					this.input.right = false;
+					break;
+
+			}
+
+		}
+
+	}
+
+	function onSessionStarted( session ) {
+	    session.addEventListener( 'end', this._onSessionEnded );
+	    session.addEventListener('inputsourceschange', this._onInputSourcesChange);
+	    session.requestReferenceSpace('local').then((referenceSpace) => {
+	        this.xrReferenceSpace = referenceSpace;
+	    });
+
+	    this.world.renderer.xr.setSession( session );
+	    this.world.xrSession = session;
+	    this.world.xrCamera = this.world.renderer.xr.getCamera(this.world.camera);
+	    this.world.xrSession.updateRenderState({
+	        depthFar: 500,
+	        //depthNear: 0.3
+	    });
+
+	    this.xrScene = new Scene();
+	    const hemiLight = new HemisphereLight( 0xffffff, 0x444444, 1 );
+		hemiLight.position.set( 0, 0, 0 );
+	    this.world.xrScene.add( hemiLight );
+	    //console.log(this);
+	    this.active = true;
+	    this.owner.activate();
+	}
+
+	function onSessionEnded( /*event*/ ) {
+	    this.owner.deactivate();
+	    this.world.xrSession.removeEventListener( 'end', this._onSessionEnded );
+	    this.world.xrSession = null;
+		this.owner.deactivate();
+	    this.world.scene.position.set(0, 0, 0);
+	    //console.log(this.inputBuffer);
+	}
+
+	function onInputSourcesChange(event) {
+	    var i  = 0;
+	    this.controllers = [];
+	    event.added.forEach((xrInputSource) => {
+	        //createMotionController(xrInputSource, this.controllers);
+	        this.controllers[i] = this.world.renderer.xr.getController( i );
+	        var controllerModelFactory = new XRControllerModelFactory();
+	        this.controllers[i].addEventListener( 'connected', function ( event ) {
+	            this.add( buildController( event.data ) );
+	        } );
+	        this.controllers[i].addEventListener( 'selectstart', ( event ) => {
+	            this.input.select = true;
+	        } );
+	        this.controllers[i].addEventListener( 'selectend',  ( event ) => {
+	            this.input.select = false;
+	        } );
+	        this.controllers[i].add( controllerModelFactory.createControllerModel( this.controllers[i] ) );
+	        this.controllers[i].xrInputSource = xrInputSource;
+	        this.world.xrScene.add( this.controllers[i] );
+	        i++;
+	    });
+	}
+	function buildController( data ) {
+
+	    switch ( data.targetRayMode ) {
+
+	        case 'tracked-pointer':
+
+	            var geometry = new BufferGeometry();
+	            geometry.setAttribute( 'position', new Float32BufferAttribute( [ 0, 0, 0, 0, 0, - 1 ], 3 ) );
+	            geometry.setAttribute( 'color', new Float32BufferAttribute( [ 0.5, 0.5, 0.5, 0, 0, 0 ], 3 ) );
+
+	            var material = new LineBasicMaterial( { vertexColors: true, blending: AdditiveBlending } );
+	            var line = new Line( geometry, material );
+	            line.name = 'laser';
+	            return line; 
+
+	        case 'gaze':
+
+	            var geometry = new RingBufferGeometry( 0.02, 0.04, 32 ).translate( 0, 0, - 1 );
+	            var material = new MeshBasicMaterial( { opacity: 0.5, transparent: true } );
+	            return new Mesh( geometry, material );
+
+	    }
+
+	}
+	function sync$1( entity, renderComponent ) {
+
+		renderComponent.matrix.copy( entity.worldMatrix );
 
 	}
 
@@ -78233,21 +79539,21 @@ vec4 envMapTexelToLinear(vec4 color) {
 						this.renderComponents.blaster.mesh.visible = true;
 						this.renderComponents.shotgun.mesh.visible = false;
 						this.renderComponents.assaultRifle.mesh.visible = false;
-						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.blaster.mesh, sync$1 );
+						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.blaster.mesh, sync$2 );
 						break;
 
 					case WEAPON_TYPES_SHOTGUN:
 						this.renderComponents.blaster.mesh.visible = false;
 						this.renderComponents.shotgun.mesh.visible = true;
 						this.renderComponents.assaultRifle.mesh.visible = false;
-						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.shotgun.mesh, sync$1 );
+						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.shotgun.mesh, sync$2 );
 						break;
 
 					case WEAPON_TYPES_ASSAULT_RIFLE:
 						this.renderComponents.blaster.mesh.visible = false;
 						this.renderComponents.shotgun.mesh.visible = false;
 						this.renderComponents.assaultRifle.mesh.visible = true;
-						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.assaultRifle.mesh, sync$1 );
+						if ( this.owner.isPlayer ) weapon.setRenderComponent( this.renderComponents.assaultRifle.mesh, sync$2 );
 						break;
 
 					default:
@@ -79108,7 +80414,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 	}
 
-	function sync$1( entity, renderComponent ) {
+	function sync$2( entity, renderComponent ) {
 
 		renderComponent.matrix.copy( entity.worldMatrix );
 
@@ -81460,9 +82766,12 @@ vec4 envMapTexelToLinear(vec4 color) {
 			this.renderer = null;
 			this.camera = null;
 			this.scene = null;
+	        this.xrScene = null;
 			this.fpsControls = null;
 			this.orbitControls = null;
 			this.useFPSControls = false;
+	 		this.vrControls = null;
+			this.useVRControls = false; 
 
 			//
 
@@ -81478,8 +82787,6 @@ vec4 envMapTexelToLinear(vec4 color) {
 			this._animate = animate.bind( this );
 			this._onWindowResize = onWindowResize.bind( this );
 
-			this._onSessionStarted = onSessionStarted.bind( this );
-			this._onSessionEnded = onSessionEnded.bind( this );
 			//
 
 			this.debug = true;
@@ -81495,9 +82802,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 				skeletonHelpers: new Array(),
 				itemHelpers: new Array()
 			};
-	        navigator.xr.isSessionSupported( 'immersive-vr' ).then( (supported ) => {
-	            this.xrSupported = supported;
-	        });
+
 	        this.xrSession = null;
 		}
 
@@ -81584,7 +82889,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			bulletLine.visible = false;
 
 			const bullet = new Bullet( owner, ray );
-			bullet.setRenderComponent( bulletLine, sync$2 );
+			bullet.setRenderComponent( bulletLine, sync$3 );
 
 			this.add( bullet );
 
@@ -81717,7 +83022,6 @@ vec4 envMapTexelToLinear(vec4 color) {
 	        this.camera = new PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 1000 );
 	        this.camera.position.set( 0, 75, 100 );
 	        this.camera.add( this.assetManager.listener );
-	        this.scene.add(this.camera);
 	        this.xrCamera = null;
 
 			// helpers
@@ -81786,7 +83090,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 				const enemy = new Enemy( this );
 				enemy.name = 'Bot' + i;
-				enemy.setRenderComponent( renderComponent, sync$2 );
+				enemy.setRenderComponent( renderComponent, sync$3 );
 
 				// set animations
 
@@ -81863,7 +83167,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			const geometry = new MeshGeometry( vertices, indices );
 			const level = new Level( geometry );
 			level.name = 'level';
-			level.setRenderComponent( renderComponent, sync$2 );
+			level.setRenderComponent( renderComponent, sync$3 );
 
 			this.add( level );
 
@@ -81931,7 +83235,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 			const body = new Object3D(); // dummy 3D object for adding spatial audios
 			body.matrixAutoUpdate = false;
-			player.setRenderComponent( body, sync$2 );
+			player.setRenderComponent( body, sync$3 );
 
 			// audio
 
@@ -82002,8 +83306,28 @@ vec4 envMapTexelToLinear(vec4 color) {
 		* @return {World} A reference to this world object.
 		*/
 		_initControls() {
+	        document.addEventListener( 'keydown', (event) => {
+	                switch ( event.keyCode ) {
 
-			this.fpsControls = new FirstPersonControls( this.player );
+	                    case 73: // up I
+	                        this.scene.position.y++;
+	                        break;
+
+	                    case 74: // left J
+	                        this.scene.position.x++;
+	                        break;
+
+	                    case 75: // down K
+	                        this.scene.position.y--;
+	                        break;
+
+	                    case 76: // right L
+	                        this.scene.position.x--;
+	                        break;
+	                }
+	        }, false );
+
+	        this.fpsControls = new FirstPersonControls( this.player );
 			this.fpsControls.sync();
 
 			this.fpsControls.addEventListener( 'lock', ( ) => {
@@ -82055,6 +83379,13 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 			}
 
+	        navigator.xr.isSessionSupported( 'immersive-vr' ).then( ( supported ) => {
+	            this.xrSupported = supported;
+	            if (supported) {
+	                this.xrScene = new Scene();
+	                this.vrControls = new VRControls( this );
+	            }
+	        });
 			return this;
 
 		}
@@ -82076,7 +83407,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 	// used to sync Yuka Game Entities with three.js objects
 
-	function sync$2( entity, renderComponent ) {
+	function sync$3( entity, renderComponent ) {
 
 		renderComponent.matrix.copy( entity.worldMatrix );
 
@@ -82135,15 +83466,10 @@ vec4 envMapTexelToLinear(vec4 color) {
 		this.pathPlanner.update();
 
 		this.renderer.clear();
-	    if(this.xrSession){
+	    if (this.xrSession){
+	        this.vrControls.update( delta );
+	        this.renderer.render( this.xrScene, this.xrCamera );
 	        this.renderer.render( this.scene, this.xrCamera );
-	        let bot = this.entityManager.getEntityByName('Bot0');
-	        if (bot) {
-	            var v = new Vector3();
-	            v.copy(bot.position);
-	            this.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
-	        }
-
 	    }
 	    else {
 		    this.renderer.render( this.scene, this.camera );
@@ -82151,23 +83477,6 @@ vec4 envMapTexelToLinear(vec4 color) {
 	    }
 	}
 
-	function onSessionStarted( session ) {
-	    session.addEventListener( 'end', this._onSessionEnded );
-	    this.renderer.xr.setSession( session );
-	    this.xrSession = session;
-	    this.xrCamera = this.renderer.xr.getCamera(this.camera);
-	    this.xrSession.updateRenderState({
-	        depthNear: 0.35,
-	    });
-	    console.log(this.xrCamera);
-	}
-
-	function onSessionEnded( /*event*/ ) {
-
-	    this.xrSession.removeEventListener( 'end', this._onSessionEnded );
-	    this.xrSession = null;
-
-	}
 	var world = new World();
 
 	/**

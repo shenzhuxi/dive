@@ -8,6 +8,7 @@ import { AssetManager } from './AssetManager.js';
 import { SpawningManager } from './SpawningManager.js';
 import { UIManager } from './UIManager.js';
 import { FirstPersonControls } from '../controls/FirstPersonControls.js';
+import { VRControls } from '../controls/VRControls.js';
 import { NavMeshUtils } from '../etc/NavMeshUtils.js';
 import { SceneUtils } from '../etc/SceneUtils.js';
 import { Level } from '../entities/Level.js';
@@ -50,9 +51,12 @@ class World {
 		this.renderer = null;
 		this.camera = null;
 		this.scene = null;
+        this.xrScene = null;
 		this.fpsControls = null;
 		this.orbitControls = null;
 		this.useFPSControls = false;
+ 		this.vrControls = null;
+		this.useVRControls = false; 
 
 		//
 
@@ -68,8 +72,6 @@ class World {
 		this._animate = animate.bind( this );
 		this._onWindowResize = onWindowResize.bind( this );
 
-		this._onSessionStarted = onSessionStarted.bind( this );
-		this._onSessionEnded = onSessionEnded.bind( this );
 		//
 
 		this.debug = true;
@@ -85,9 +87,7 @@ class World {
 			skeletonHelpers: new Array(),
 			itemHelpers: new Array()
 		};
-        navigator.xr.isSessionSupported( 'immersive-vr' ).then( (supported ) => {
-            this.xrSupported = supported;
-        });
+
         this.xrSession = null;
 	}
 
@@ -307,7 +307,6 @@ class World {
         this.camera = new PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.1, 1000 );
         this.camera.position.set( 0, 75, 100 );
         this.camera.add( this.assetManager.listener );
-        this.scene.add(this.camera);
         this.xrCamera = null;
 
 		// helpers
@@ -592,8 +591,28 @@ class World {
 	* @return {World} A reference to this world object.
 	*/
 	_initControls() {
+        document.addEventListener( 'keydown', (event) => {
+                switch ( event.keyCode ) {
 
-		this.fpsControls = new FirstPersonControls( this.player );
+                    case 73: // up I
+                        this.scene.position.y++;
+                        break;
+
+                    case 74: // left J
+                        this.scene.position.x++;
+                        break;
+
+                    case 75: // down K
+                        this.scene.position.y--;
+                        break;
+
+                    case 76: // right L
+                        this.scene.position.x--;
+                        break;
+                }
+        }, false );
+
+        this.fpsControls = new FirstPersonControls( this.player );
 		this.fpsControls.sync();
 
 		this.fpsControls.addEventListener( 'lock', ( ) => {
@@ -645,6 +664,13 @@ class World {
 
 		}
 
+        navigator.xr.isSessionSupported( 'immersive-vr' ).then( ( supported ) => {
+            this.xrSupported = supported;
+            if (supported) {
+                this.xrScene = new Scene();
+                this.vrControls = new VRControls( this );
+            }
+        });
 		return this;
 
 	}
@@ -725,15 +751,10 @@ function animate() {
 	this.pathPlanner.update();
 
 	this.renderer.clear();
-    if(this.xrSession){
+    if (this.xrSession){
+        this.vrControls.update( delta );
+        this.renderer.render( this.xrScene, this.xrCamera );
         this.renderer.render( this.scene, this.xrCamera );
-        let bot = this.entityManager.getEntityByName('Bot0');
-        if (bot) {
-            var v = new Vector3();
-            v.copy(bot.position);
-            this.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
-        }
-
     }
     else {
 	    this.renderer.render( this.scene, this.camera );
@@ -741,21 +762,4 @@ function animate() {
     }
 }
 
-function onSessionStarted( session ) {
-    session.addEventListener( 'end', this._onSessionEnded );
-    this.renderer.xr.setSession( session );
-    this.xrSession = session;
-    this.xrCamera = this.renderer.xr.getCamera(this.camera);
-    this.xrSession.updateRenderState({
-        depthNear: 0.35,
-    });
-    console.log(this.xrCamera);
-}
-
-function onSessionEnded( /*event*/ ) {
-
-    this.xrSession.removeEventListener( 'end', this._onSessionEnded );
-    this.xrSession = null;
-
-}
 export default new World();
