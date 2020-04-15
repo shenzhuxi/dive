@@ -76,6 +76,7 @@ class VRControls extends EventDispatcher {
         geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( [ 0, 0, 0, 0, 0, -100 ], 3 ) );
         geometry.setAttribute( 'color', new THREE.Float32BufferAttribute( [ 0.5, 0.5, 0.5, 0, 0, 0 ], 3 ) );
 
+        this.cameraHolder = null;
         var material = new THREE.LineBasicMaterial( { vertexColors: true, blending: THREE.AdditiveBlending } );
         this.line = new THREE.Line( geometry, material );
         this.line.name = 'laser';
@@ -169,15 +170,9 @@ class VRControls extends EventDispatcher {
 	*/
 	update( delta ) {        
 		if ( this.active ) {
-            var v = new Vector3();
-            v.copy(this.owner.position);
-            this.world.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
-            //this.owner.head.getWorldPosition(v);
-            //this.world.scene.position.y =  -1 * v.y;
-            //this.world.scene.position.x =  -1 * v.x;
-            //this.world.scene.position.z =  -1 * v.z;
-            //this.owner.head.position.y = v.y;
-            
+            this.cameraHolder.position.copy(this.owner.position);
+            this.world.xrCamera = this.world.renderer.xr.getCamera(this.world.camera);
+
             //https://stackoverflow.com/questions/43606135/split-quaternion-into-axis-rotations
             var q = new THREE.Quaternion();
             q.copy(this.world.xrCamera.quaternion);
@@ -189,9 +184,11 @@ class VRControls extends EventDispatcher {
 			const speed = this.owner.getSpeed();
 			elapsed += delta * speed;
 
+            var xrCameraLocalPosition = new THREE.Vector3();
+            xrCameraLocalPosition.setFromMatrixPosition(this.world.xrCamera.matrix);
             if (this.controllers.length > 0) {
                 var controller = this.controllers[0];
-                this.owner.head.position.y = controller.position.y;
+                this.owner.head.position.y = xrCameraLocalPosition.y*0.618;
                 var q = new THREE.Quaternion();
                 q.copy( this.owner.rotation ).inverse();
                 this.owner.head.rotation.copy( q.multiply(controller.quaternion) );
@@ -315,7 +312,7 @@ class VRControls extends EventDispatcher {
 
 		//
 
-		head.position.y = this.world.xrCamera.position.y * 0.618;//owner.height;
+		//head.position.y = owner.height;
 
 		//
 
@@ -500,7 +497,6 @@ function onSessionStarted( session ) {
 
     this.world.renderer.xr.setSession( session );
     this.world.xrSession = session;
-    this.world.xrCamera = this.world.renderer.xr.getCamera(this.world.camera);
     this.world.xrSession.updateRenderState({
         depthFar: 500,
         //depthNear: 0.3
@@ -513,6 +509,10 @@ function onSessionStarted( session ) {
     //console.log(this);
     this.active = true;
     this.owner.activate();
+    this.world.camera.position.set( 0, 0, 0 );
+    this.cameraHolder = new THREE.Object3D();
+    this.cameraHolder.add(this.world.camera);
+    this.world.scene.add(this.cameraHolder);
 }
 
 function onSessionEnded( /*event*/ ) {
@@ -609,5 +609,10 @@ function sync( entity, renderComponent ) {
 
 }
 
+function syncCamera( entity, camera ) {
+
+	camera.matrixWorld.copy( entity.getWorldPosition() );
+
+}
 
 export { VRControls };

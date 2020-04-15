@@ -12,7 +12,7 @@ const CONFIG = {
 		BOUNDING_RADIUS: 0.5, // meter
 		DYING_TIME: 3, // seconds
 		HEAD_HEIGHT: 1.7, // meter
-		MAX_HEALTH: 100, // health points
+		MAX_HEALTH: 1000, // health points
 		MAX_SPEED: 6 // meter/seconds
 	},
 	CONTROLS: {

@@ -45,7 +45,7 @@ class World {
 		this.pathPlanner = null;
 		this.spawningManager = new SpawningManager( this );
 		this.uiManager = new UIManager( this );
-
+        this.level = null;
 		//
 
 		this.renderer = null;
@@ -427,7 +427,7 @@ class World {
 				this.helpers.skeletonHelpers.push( skeletonHelper );
 
 			}
-
+            //this.level.add(enemy);
 		}
 
 		return this;
@@ -453,7 +453,7 @@ class World {
 		const level = new Level( geometry );
 		level.name = 'level';
 		level.setRenderComponent( renderComponent, sync );
-
+        this.level = level;
 		this.add( level );
 
 		// navigation mesh
@@ -724,6 +724,7 @@ function onWindowResize() {
 function animate() {
 
     this.renderer.setAnimationLoop( this._animate );
+
 	this.time.update();
 
 	this.tick ++;
@@ -751,15 +752,15 @@ function animate() {
 	this.pathPlanner.update();
 
 	this.renderer.clear();
-    if (this.xrSession){
-        this.vrControls.update( delta );
-        this.renderer.render( this.xrScene, this.xrCamera );
-        this.renderer.render( this.scene, this.xrCamera );
+
+	this.renderer.render( this.scene, this.camera );
+    if (this.vrControls) {
+        this.vrControls.update(delta);
     }
     else {
-	    this.renderer.render( this.scene, this.camera );
-        this.uiManager.update( delta );
+	    this.uiManager.update( delta );
     }
+
 }
 
 export default new World();

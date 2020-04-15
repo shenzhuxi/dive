@@ -70405,7 +70405,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			BOUNDING_RADIUS: 0.5, // meter
 			DYING_TIME: 3, // seconds
 			HEAD_HEIGHT: 1.7, // meter
-			MAX_HEALTH: 100, // health points
+			MAX_HEALTH: 1000, // health points
 			MAX_SPEED: 6 // meter/seconds
 		},
 		CONTROLS: {
@@ -76427,6 +76427,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 	        geometry.setAttribute( 'position', new Float32BufferAttribute( [ 0, 0, 0, 0, 0, -100 ], 3 ) );
 	        geometry.setAttribute( 'color', new Float32BufferAttribute( [ 0.5, 0.5, 0.5, 0, 0, 0 ], 3 ) );
 
+	        this.cameraHolder = null;
 	        var material = new LineBasicMaterial( { vertexColors: true, blending: AdditiveBlending } );
 	        this.line = new Line( geometry, material );
 	        this.line.name = 'laser';
@@ -76520,15 +76521,9 @@ vec4 envMapTexelToLinear(vec4 color) {
 		*/
 		update( delta ) {        
 			if ( this.active ) {
-	            var v = new Vector3();
-	            v.copy(this.owner.position);
-	            this.world.scene.position.set(-1 * v.x , -1 * v.y, -1 * v.z);
-	            //this.owner.head.getWorldPosition(v);
-	            //this.world.scene.position.y =  -1 * v.y;
-	            //this.world.scene.position.x =  -1 * v.x;
-	            //this.world.scene.position.z =  -1 * v.z;
-	            //this.owner.head.position.y = v.y;
-	            
+	            this.cameraHolder.position.copy(this.owner.position);
+	            this.world.xrCamera = this.world.renderer.xr.getCamera(this.world.camera);
+
 	            //https://stackoverflow.com/questions/43606135/split-quaternion-into-axis-rotations
 	            var q = new Quaternion$1();
 	            q.copy(this.world.xrCamera.quaternion);
@@ -76540,9 +76535,11 @@ vec4 envMapTexelToLinear(vec4 color) {
 				const speed = this.owner.getSpeed();
 				elapsed$1 += delta * speed;
 
+	            var xrCameraLocalPosition = new Vector3$1();
+	            xrCameraLocalPosition.setFromMatrixPosition(this.world.xrCamera.matrix);
 	            if (this.controllers.length > 0) {
 	                var controller = this.controllers[0];
-	                this.owner.head.position.y = controller.position.y;
+	                this.owner.head.position.y = xrCameraLocalPosition.y*0.618;
 	                var q = new Quaternion$1();
 	                q.copy( this.owner.rotation ).inverse();
 	                this.owner.head.rotation.copy( q.multiply(controller.quaternion) );
@@ -76666,7 +76663,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 			//
 
-			head.position.y = this.world.xrCamera.position.y * 0.618;//owner.height;
+			//head.position.y = owner.height;
 
 			//
 
@@ -76851,7 +76848,6 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 	    this.world.renderer.xr.setSession( session );
 	    this.world.xrSession = session;
-	    this.world.xrCamera = this.world.renderer.xr.getCamera(this.world.camera);
 	    this.world.xrSession.updateRenderState({
 	        depthFar: 500,
 	        //depthNear: 0.3
@@ -76864,6 +76860,10 @@ vec4 envMapTexelToLinear(vec4 color) {
 	    //console.log(this);
 	    this.active = true;
 	    this.owner.activate();
+	    this.world.camera.position.set( 0, 0, 0 );
+	    this.cameraHolder = new Object3D();
+	    this.cameraHolder.add(this.world.camera);
+	    this.world.scene.add(this.cameraHolder);
 	}
 
 	function onSessionEnded( /*event*/ ) {
@@ -79634,7 +79634,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 
 				if ( owner.isPlayer ) {
 
-					weapon.scale.set( 2, 2, 2 );
+					weapon.scale.set( 1, 1, 1 );
 					weapon.position.set( 0.3, - 0.3, - 1 );
 					weapon.rotation.fromEuler( 0, Math.PI, 0 );
 					weapon.initAnimations();
@@ -82760,7 +82760,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			this.pathPlanner = null;
 			this.spawningManager = new SpawningManager( this );
 			this.uiManager = new UIManager( this );
-
+	        this.level = null;
 			//
 
 			this.renderer = null;
@@ -83142,7 +83142,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 					this.helpers.skeletonHelpers.push( skeletonHelper );
 
 				}
-
+	            //this.level.add(enemy);
 			}
 
 			return this;
@@ -83168,7 +83168,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 			const level = new Level( geometry );
 			level.name = 'level';
 			level.setRenderComponent( renderComponent, sync$3 );
-
+	        this.level = level;
 			this.add( level );
 
 			// navigation mesh
@@ -83439,6 +83439,7 @@ vec4 envMapTexelToLinear(vec4 color) {
 	function animate() {
 
 	    this.renderer.setAnimationLoop( this._animate );
+
 		this.time.update();
 
 		this.tick ++;
@@ -83466,15 +83467,15 @@ vec4 envMapTexelToLinear(vec4 color) {
 		this.pathPlanner.update();
 
 		this.renderer.clear();
-	    if (this.xrSession){
-	        this.vrControls.update( delta );
-	        this.renderer.render( this.xrScene, this.xrCamera );
-	        this.renderer.render( this.scene, this.xrCamera );
+
+		this.renderer.render( this.scene, this.camera );
+	    if (this.vrControls) {
+	        this.vrControls.update(delta);
 	    }
 	    else {
-		    this.renderer.render( this.scene, this.camera );
-	        this.uiManager.update( delta );
+		    this.uiManager.update( delta );
 	    }
+
 	}
 
 	var world = new World();
