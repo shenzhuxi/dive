@@ -156,6 +156,7 @@ class UIManager {
 			folderWorld.add( params, 'showAxes' ).name( 'show axes helper' ).onChange( ( value ) => {
 
 				world.helpers.axesHelper.visible = value;
+                world.vrPlayer.axesHelper.visible = value;
 
 			} );
 

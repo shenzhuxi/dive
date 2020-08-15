@@ -1,9 +1,10 @@
-import { EventDispatcher, Vector3, Logger } from 'yuka';
+import { EventDispatcher, Vector3, Logger, FollowPathBehavior, OnPathBehavior, SeekBehavior, Ray } from 'yuka';
 import { WEAPON_TYPES_BLASTER, WEAPON_TYPES_SHOTGUN, WEAPON_TYPES_ASSAULT_RIFLE } from '../core/Constants.js';
 import { CONFIG } from '../core/Config.js';
 import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
-import { fetchProfile, MotionController, Constants } from '@webxr-input-profiles/motion-controllers/dist/motion-controllers.module.js'
+//import { fetchProfile, MotionController, Constants } from '@webxr-input-profiles/motion-controllers/dist/motion-controllers.module.js'
 import * as THREE from 'three';
+import { default as TinySDF } from '../etc/TinySDF';
 
 const PI05 = Math.PI / 2;
 const direction = new Vector3();
@@ -33,7 +34,7 @@ class VRControls extends EventDispatcher {
 		super();
 
         this.world = world;
-		this.owner = world.player;
+		this.owner = world.vrPlayer;
 
 		this.active = false;
         this.xrScene = null;
@@ -63,24 +64,32 @@ class VRControls extends EventDispatcher {
 
 		this.sounds = new Map();
 
-		this._mouseDownHandler = onMouseDown.bind( this );
-		this._mouseUpHandler = onMouseUp.bind( this );
-		this._mouseMoveHandler = onMouseMove.bind( this );
+		//this._mouseDownHandler = onMouseDown.bind( this );
+		//this._mouseUpHandler = onMouseUp.bind( this );
+		//this._mouseMoveHandler = onMouseMove.bind( this );
 		this._keyDownHandler = onKeyDown.bind( this );
 		this._keyUpHandler = onKeyUp.bind( this );
         
 		this._onSessionStarted = onSessionStarted.bind( this );
 		this._onSessionEnded = onSessionEnded.bind( this );
         this._onInputSourcesChange = onInputSourcesChange.bind(this);
-        var geometry = new THREE.BufferGeometry();
-        geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( [ 0, 0, 0, 0, 0, -100 ], 3 ) );
-        geometry.setAttribute( 'color', new THREE.Float32BufferAttribute( [ 0.5, 0.5, 0.5, 0, 0, 0 ], 3 ) );
 
         this.cameraHolder = null;
-        var material = new THREE.LineBasicMaterial( { vertexColors: true, blending: THREE.AdditiveBlending } );
-        this.line = new THREE.Line( geometry, material );
+        
+        this.line = new THREE.Line();
+        var dotGeometry = new THREE.Geometry();
+        dotGeometry.vertices.push(new THREE.Vector3( 0, 0, 0));
+        var dotMaterial = new THREE.PointsMaterial( { size: 3, sizeAttenuation: false } );
+        this.dot = new THREE.Points( dotGeometry, dotMaterial );
         this.line.name = 'laser';
-        this.line.matrixAutoUpdate = false;
+
+        this.target = null;
+        this.targetDistance = null;
+        this.weaponId = WEAPON_TYPES_BLASTER;
+        this.canvas = document.createElement( 'canvas' );
+        this.context = this.canvas.getContext( '2d' );
+        this.texture = new THREE.CanvasTexture( this.canvas );
+        this.texture.needsUpdate = true;
 	}
 
 	/**
@@ -99,9 +108,9 @@ class VRControls extends EventDispatcher {
                 }
             );
         }
-
-        this.owner.head.setRenderComponent(this.line, sync);
+        this.owner.setRenderComponent(this.owner.axesHelper, sync);
         this.world.scene.add(this.line);
+        this.world.scene.add(this.dot);
 		return this;
 
 	}
@@ -113,6 +122,8 @@ class VRControls extends EventDispatcher {
 	*/
 	disconnect() {
 
+        this.owner.path.clear();
+        this.owner.steering.clear();
 		return this;
 
 	}
@@ -126,11 +137,11 @@ class VRControls extends EventDispatcher {
 	*/
 	sync() {
 
-		this.owner.rotation.toEuler( euler );
-		this.movementX = euler.y; // yaw
+		//this.owner.rotation.toEuler( euler );
+		//this.movementX = euler.y; // yaw
 
-		this.owner.head.rotation.toEuler( euler );
-		this.movementY = euler.x; // pitch
+		//this.owner.head.rotation.toEuler( euler );
+		//this.movementY = euler.x; // pitch
 
 		return this;
 
@@ -146,7 +157,7 @@ class VRControls extends EventDispatcher {
 
 		this.active = true;
 
-		this.movementX = 0;
+		//this.movementX = 0;
 		this.movementY = 0;
 
 		this.input.forward = false;
@@ -179,61 +190,59 @@ class VRControls extends EventDispatcher {
             var theta = Math.atan2(q.y, q.w);
             this.owner.rotation.set(0, Math.sin(theta), 0, Math.cos(theta));
             
-			this._updateVelocity( delta );
+			//this._updateVelocity( delta );
 
 			const speed = this.owner.getSpeed();
 			elapsed += delta * speed;
 
             var xrCameraLocalPosition = new THREE.Vector3();
             xrCameraLocalPosition.setFromMatrixPosition(this.world.xrCamera.matrix);
-            if (this.controllers.length > 0) {
-                var controller = this.controllers[0];
-                this.owner.head.position.y = xrCameraLocalPosition.y*0.618;
-                var q = new THREE.Quaternion();
+
+            if (this.controllers['right']) {
+                let controller = this.controllers['right'];
+                this.owner.head.position.copy(xrCameraLocalPosition);
+                //this.owner.head.matrix.copy(this.world.xrCamera.matrix);
+                let q = new THREE.Quaternion();
                 q.copy( this.owner.rotation ).inverse();
-                this.owner.head.rotation.copy( q.multiply(controller.quaternion) );
-                var u = new THREE.Euler();
-                this.owner.head.rotation.toEuler(u);
+                //this.owner.handRight.rotation.copy( q.multiply(controller.quaternion) );
+                let v = new Vector3();
+                v.copy(this.owner.position);
+                this.owner.handRight.position.copy(v.add(controller.position));//getWorldPosition());
+                //this.owner.handRight.position.set( 0.2, controller.position.y, controller.position.z);
+                this.owner.handRight.getWorldPosition(v.add(controller.position));
+                this.owner.handRight.rotation.copy(controller.quaternion); 
+                let u = new THREE.Euler();
+                this.owner.handRight.rotation.toEuler(u);
                 if (u.x > 1.0) {
-                    this.input.forward = true;
-                    this.input.backward = false;
+                    this._switchWeapon();
                 }
                 if (u.x < -1.0) {
-                    this.input.backward = true;
-                    this.input.forward = false;
-                }
-                if (u.x >= -1.0 && controller.rotation.x <= 1.0) {
-                    this.input.backward = false;
-                    this.input.forward = false;
+                    this.owner.reload();
                 }
                 if (u.z > 1.0) {
-                    if ( this.owner.hasWeapon( WEAPON_TYPES_SHOTGUN ) ) {
 
-                        this.owner.changeWeapon( WEAPON_TYPES_SHOTGUN );
-
-                    } 
-                    else {
-                        this.owner.changeWeapon( WEAPON_TYPES_BLASTER );
-
-                    }
                 }
                 if (u.z < -1.0) {
-                    if ( this.owner.hasWeapon( WEAPON_TYPES_ASSAULT_RIFLE ) ) {
-
-                        this.owner.changeWeapon( WEAPON_TYPES_ASSAULT_RIFLE );
-
-                    }
-                    else {
-                        this.owner.changeWeapon( WEAPON_TYPES_BLASTER );
-
-                    }
                 }
+            }
+            if (this.controllers['left']) {
+                this.owner.remove(this.owner.handLeft);
+                this.world.add(this.owner.handLeft);
+                let controller = this.controllers['left'];
+                let v = new Vector3();
+                v.copy(this.owner.position);
+                this.owner.handLeft.position.copy(v.add(controller.position));//getWorldPosition());
+            }
+            else {
+                this.owner.add(this.owner.handLeft);
+                this.owner.handLeft.position.set(-0.5, xrCameraLocalPosition.y, - 1)
             }
 			// elapsed is used by the following two methods. it is scaled with the speed
 			// to modulate the head bobbing and weapon movement
 
 			this._updateHead();
-			this._updateWeapon();
+			//this._updateWeapon();
+            this._updatePointer();
 
             //60 frames/second input sampling
             if (this.clock.getDelta() < 1/60) {
@@ -249,19 +258,36 @@ class VRControls extends EventDispatcher {
                     touchpad: {}
                 }
             };
-
-            if (this.inputBuffer[this.frameId].vrController.select) {
-                // if the trigger is pressed and an automatic weapon like the assault rifle is equiped
-                // support automatic fire
-                if ( this.owner.isAutomaticWeaponUsed() ) {
-                    this.owner.shoot();
+            if (this.target) {
+                if (this.target.constructor.name  == 'Level') {
+                    if (this.inputBuffer[this.frameId].vrController.select) {
+                        if (!this.inputBuffer[this.frameId - 1].vrController.select) {
+                            var v = new Vector3(this.dot.position.x, this.dot.position.y, this.dot.position.z);
+                            var path = this.world.navMesh.findPath(this.owner.position, v);
+                            onPathFound(this.owner, path);
+                        }
+                    }
                 }
-                else if (!this.inputBuffer[this.frameId - 1].vrController.select) {
-                    this.owner.shoot();
+                if (this.target.constructor.name  == 'Enemy') {
+                    if (this.inputBuffer[this.frameId].vrController.select) {
+                        // if the trigger is pressed and an automatic weapon like the assault rifle is equiped
+                        // support automatic fire
+                        if ( this.owner.isAutomaticWeaponUsed() ) {
+                            this.owner.shoot();
+                        }
+                        else if (!this.inputBuffer[this.frameId - 1].vrController.select) {
+                            this.owner.shoot();
+                        }
+                    }
                 }
             }
 		}
-
+        //if (this.xrScene) {
+        //    this.xrScene.autoUpdate = true;
+        //    this.world.renderer.render( this.xrScene, this.world.camera );
+        //}
+        this.context.fillText(new Date().getTime(), this.canvas.width / 2, this.canvas.height / 2);
+        this.texture.needsUpdate = true
 		return this;
 
 	}
@@ -359,6 +385,74 @@ class VRControls extends EventDispatcher {
 
 	}
 
+    _updatePointer() {
+        const entities = this.world.entityManager.entities;
+		const hand = this.owner.handRight;
+		const world = this.world;
+        const owner = this.owner;
+		const ray = new Ray();
+        const currentIntersectionPoint = new Vector3(); 
+        let minDistance = Infinity;
+        const intersectionPoint = new Vector3();
+        let hittedEntity = null;
+
+        this.line.material.color = new THREE.Color();
+        var lineGeom = new THREE.Geometry();
+        lineGeom.vertices.push(ray.origin);
+        this.dot.visible = false;
+
+        hand.getWorldPosition( ray.origin );
+		hand.getWorldDirection( ray.direction );
+		for ( let i = 0, l = entities.length; i < l; i ++ ) {
+			const entity = entities[ i ];
+			if ( entity !== owner && entity.active && entity.checkProjectileIntersection ) {
+				if ( entity.checkProjectileIntersection( ray, currentIntersectionPoint ) !== null ) {
+					const squaredDistance = currentIntersectionPoint.squaredDistanceTo( ray.origin );
+					if ( squaredDistance < minDistance ) {
+						minDistance = squaredDistance;
+						hittedEntity = entity;
+						intersectionPoint.copy( currentIntersectionPoint );
+					}
+
+				}
+			}
+		}
+        if (hittedEntity && intersectionPoint)  {
+            var sourcePosition = new Vector3(0, 0, 0);
+            lineGeom.vertices.push(intersectionPoint);
+            this.dot.position.copy(intersectionPoint);
+            this.dot.visible = true;
+
+            if (hittedEntity.name  == 'level') {
+                this.line.material.color = new THREE.Color( 0x00ff00);
+                this.dot.material.color = new THREE.Color( 0x00ff00);
+            }
+            if (hittedEntity.constructor.name  == 'Enemy') {
+                this.line.material.color = new THREE.Color( 0xff0000 );
+                this.dot.material.color = new THREE.Color( 0xff0000);
+            }
+        }
+        else {
+            lineGeom.vertices.push( ray.direction.multiplyScalar(500) );
+        }
+        this.line.geometry = lineGeom;
+        this.line.geometry.verticesNeedUpdate = true;
+		this.target = hittedEntity;
+        this.targetDistance = minDistance;
+	}
+
+    _switchWeapon() {
+        for ( let i = this.weaponId + 1; i <= 3; i ++ ) {
+            if (this.owner.hasWeapon(i)) {
+                this.owner.changeWeapon(i);
+                this.weaponId = i;
+                return this;
+            }
+        }
+        this.weaponId = 1;
+        this.owner.changeWeapon(1);
+        return this
+    }
 }
 
 // event listeners
@@ -491,7 +585,7 @@ function onKeyUp( event ) {
 function onSessionStarted( session ) {
     session.addEventListener( 'end', this._onSessionEnded );
     session.addEventListener('inputsourceschange', this._onInputSourcesChange);
-    session.requestReferenceSpace('local').then((referenceSpace) => {
+    session.requestReferenceSpace('local-floor').then((referenceSpace) => {
         this.xrReferenceSpace = referenceSpace;
     });
 
@@ -505,7 +599,7 @@ function onSessionStarted( session ) {
     this.xrScene = new THREE.Scene();
     const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x444444, 1 );
 	hemiLight.position.set( 0, 0, 0 );
-    this.world.xrScene.add( hemiLight );
+    this.xrScene.add( hemiLight );
     //console.log(this);
     this.active = true;
     this.owner.activate();
@@ -520,8 +614,7 @@ function onSessionEnded( /*event*/ ) {
     this.world.xrSession.removeEventListener( 'end', this._onSessionEnded );
     this.world.xrSession = null;
 	this.owner.deactivate();
-    this.world.scene.position.set(0, 0, 0);
-    //console.log(this.inputBuffer);
+    this.world.camera.position.set( 0, 75, 100 );
 }
 
 function onInputSourcesChange(event) {
@@ -529,24 +622,27 @@ function onInputSourcesChange(event) {
     this.controllers = [];
     event.added.forEach((xrInputSource) => {
         //createMotionController(xrInputSource, this.controllers);
-        this.controllers[i] = this.world.renderer.xr.getController( i );
+        let controller = this.world.renderer.xr.getController( i );
         var controllerModelFactory = new XRControllerModelFactory();
-        this.controllers[i].addEventListener( 'connected', function ( event ) {
+        controller.addEventListener( 'connected', function ( event ) {
             this.add( buildController( event.data ) );
         } );
-        this.controllers[i].addEventListener( 'selectstart', ( event ) => {
+        controller.addEventListener( 'selectstart', ( event ) => {
             this.input.select = true;
         } );
-        this.controllers[i].addEventListener( 'selectend',  ( event ) => {
+        controller.addEventListener( 'selectend',  ( event ) => {
             this.input.select = false;
         } );
-        this.controllers[i].add( controllerModelFactory.createControllerModel( this.controllers[i] ) );
-        this.controllers[i].xrInputSource = xrInputSource;
-        this.world.xrScene.add( this.controllers[i] );
+        controller.add( controllerModelFactory.createControllerModel( controller ) );
+        controller.xrInputSource = xrInputSource;
+        //controller.matrixAutoUpdate = true;
+        //controller.matrixWorldNeedsUpdate  = true;
+        //this.xrScene.add( controller );
+        this.controllers[xrInputSource.handedness] = controller;
         i++;
     });
 };
- 
+/*
 async function createMotionController(xrInputSource, controllers) {
     const uri = '../node_modules/@webxr-input-profiles/assets/dist/profiles';
     const motionControllers = {};
@@ -556,7 +652,7 @@ async function createMotionController(xrInputSource, controllers) {
     //console.log(owner, motionControllers);
     //addMotionControllerToScene(motionController);
 }
-
+*/
 function initControllers() {
     //for (let inputSource of this.world.session.inputSources) {
         //this.controller1 = inputSource;
@@ -603,6 +699,7 @@ function buildController( data ) {
     }
 
 }
+
 function sync( entity, renderComponent ) {
 
 	renderComponent.matrix.copy( entity.worldMatrix );
@@ -613,6 +710,22 @@ function syncCamera( entity, camera ) {
 
 	camera.matrixWorld.copy( entity.getWorldPosition() );
 
+}
+
+function onPathFound( owner, path ) {
+    owner.path.clear();
+    owner.steering.clear();
+    for ( let i = 0, l = path.length; i < l; i ++ ) {
+        owner.path.add(path[i]);
+    }
+    owner.pathHelper.geometry.dispose();
+    owner.pathHelper.geometry = new THREE.BufferGeometry().setFromPoints( path );
+    const followPathBehavior = new FollowPathBehavior( owner.path, 0.5 );
+    followPathBehavior._arrive.deceleration = 0.1;
+    followPathBehavior._arrive.tolerance = 0.1;
+    owner.steering.add( followPathBehavior );
+    //const onPathBehavior = new OnPathBehavior( owner.path );
+	//owner.steering.add( onPathBehavior );
 }
 
 export { VRControls };

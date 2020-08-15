@@ -14,6 +14,7 @@ import { SceneUtils } from '../etc/SceneUtils.js';
 import { Level } from '../entities/Level.js';
 import { Enemy } from '../entities/Enemy.js';
 import { Player } from '../entities/Player.js';
+import { VRPlayer } from '../entities/VRPlayer.js';
 import { Bullet } from '../weapons/Bullet.js';
 import { PathPlanner } from '../etc/PathPlanner.js';
 import { Sky } from '../effects/Sky.js';
@@ -51,17 +52,15 @@ class World {
 		this.renderer = null;
 		this.camera = null;
 		this.scene = null;
-        this.xrScene = null;
 		this.fpsControls = null;
 		this.orbitControls = null;
 		this.useFPSControls = false;
  		this.vrControls = null;
-		this.useVRControls = false; 
 
 		//
 
 		this.player = null;
-
+        this.vrPlayer = null
 		//
 
 		this.enemyCount = CONFIG.BOT.COUNT;
@@ -106,7 +105,12 @@ class World {
 			this._initScene();
 			this._initLevel();
 			this._initEnemies();
-			this._initPlayer();
+            const player = new Player( this );
+			this._initPlayer(player);
+            this.player = player;
+            const vrPlayer = new VRPlayer( this );
+			this._initPlayer(vrPlayer);
+            this.vrPlayer = vrPlayer;
 			this._initControls();
 			this._initUI();
 
@@ -510,11 +514,11 @@ class World {
 	*
 	* @return {World} A reference to this world object.
 	*/
-	_initPlayer() {
+	_initPlayer(player) {
 
 		const assetManager = this.assetManager;
 
-		const player = new Player( this );
+		//const player = new Player( this );
 
 		// render component
 
@@ -579,7 +583,7 @@ class World {
 
 		//
 
-		this.player = player;
+		//this.player = player;
 
 		return this;
 
@@ -591,26 +595,6 @@ class World {
 	* @return {World} A reference to this world object.
 	*/
 	_initControls() {
-        document.addEventListener( 'keydown', (event) => {
-                switch ( event.keyCode ) {
-
-                    case 73: // up I
-                        this.scene.position.y++;
-                        break;
-
-                    case 74: // left J
-                        this.scene.position.x++;
-                        break;
-
-                    case 75: // down K
-                        this.scene.position.y--;
-                        break;
-
-                    case 76: // right L
-                        this.scene.position.x--;
-                        break;
-                }
-        }, false );
 
         this.fpsControls = new FirstPersonControls( this.player );
 		this.fpsControls.sync();
@@ -663,14 +647,17 @@ class World {
 			this.orbitControls.maxDistance = 500;
 
 		}
-
-        navigator.xr.isSessionSupported( 'immersive-vr' ).then( ( supported ) => {
-            this.xrSupported = supported;
-            if (supported) {
-                this.xrScene = new Scene();
-                this.vrControls = new VRControls( this );
-            }
-        });
+        if ('xr' in window.navigator) {
+            navigator.xr.isSessionSupported( 'immersive-vr' ).then( ( supported ) => {
+                this.xrSupported = supported;
+                if (supported) {
+                    this.vrControls = new VRControls( this );
+                }
+            });
+        } else {
+            //TODO: disable this.uiManager.debugParameter.enableVRControls
+            console.log("WebXR isn't available.");
+        }
 		return this;
 
 	}

@@ -329,7 +329,7 @@ class WeaponSystem {
 			if ( owner.isPlayer ) {
 
 				weapon.scale.set( 1, 1, 1 );
-				weapon.position.set( 0.3, - 0.3, - 1 );
+				if (owner.constructor.name != 'VRPlayer') weapon.position.set( 0.3, - 0.3, - 1 );
 				weapon.rotation.fromEuler( 0, Math.PI, 0 );
 				weapon.initAnimations();
 

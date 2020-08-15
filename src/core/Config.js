@@ -9,6 +9,7 @@ const CONFIG = {
 		VOLUME_IMPACT: 0.2 // volume
 	},
 	PLAYER: {
+        WEAPON_POSITION: 'RIGHT',
 		BOUNDING_RADIUS: 0.5, // meter
 		DYING_TIME: 3, // seconds
 		HEAD_HEIGHT: 1.7, // meter

@@ -32,20 +32,22 @@ class ItemGiver extends Trigger {
 	* @return {Trigger} A reference to this trigger.
 	*/
 	execute( entity ) {
+        if ( entity.constructor.name == 'Enemy' || entity.name == 'Player' ) {
 
-		const item = this.item;
+            const item = this.item;
 
-		// deactivate trigger since it's only executed once
+            // deactivate trigger since it's only executed once
 
-		this.active = false;
+            this.active = false;
 
-		// add item to entity
+            // add item to entity
 
-		item.addItemToEntity( entity );
+            item.addItemToEntity( entity );
 
-		// prepare respawn
+            // prepare respawn
 
-		item.prepareRespawn();
+            item.prepareRespawn();
+        }
 
 		return this;
 
